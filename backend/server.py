@@ -12,11 +12,15 @@ from datetime import datetime, timezone
 import base64
 import io
 import qrcode
-from emergentintegrations.llm.chat import LlmChat, UserMessage
-
+import google.generativeai as genai
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+# Configure Gemini
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+text_model = genai.GenerativeModel("gemini-1.5-flash")
+image_model = genai.GenerativeModel("imagen-3.0")
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -28,7 +32,6 @@ app = FastAPI()
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
-
 
 # Define Models
 class StatusCheck(BaseModel):
@@ -90,11 +93,10 @@ class GenerateImageRequest(BaseModel):
     dish_name: str
     description: str
 
-
 # Routes
 @api_router.get("/")
 async def root():
-    return {"message": "SavoroAI API"}
+    return {"message": "SavoroAI API (Gemini powered)"}
 
 @api_router.post("/status", response_model=StatusCheck)
 async def create_status_check(input: StatusCheckCreate):
@@ -163,12 +165,12 @@ async def update_dish(dish_id: str, dish_update: DishUpdate):
     existing_dish = await db.dishes.find_one({"id": dish_id}, {"_id": 0})
     if not existing_dish:
         raise HTTPException(status_code=404, detail="Dish not found")
-    
+
     update_data = dish_update.model_dump(exclude_unset=True)
     if update_data:
         await db.dishes.update_one({"id": dish_id}, {"$set": update_data})
         existing_dish.update(update_data)
-    
+
     if isinstance(existing_dish['created_at'], str):
         existing_dish['created_at'] = datetime.fromisoformat(existing_dish['created_at'])
     return Dish(**existing_dish)
@@ -184,23 +186,9 @@ async def delete_dish(dish_id: str):
 @api_router.post("/generate-description")
 async def generate_description(request: GenerateDescriptionRequest):
     try:
-        api_key = os.environ.get('EMERGENT_LLM_KEY')
-        if not api_key:
-            raise HTTPException(status_code=500, detail="API key not configured")
-        
-        chat = LlmChat(
-            api_key=api_key,
-            session_id=str(uuid.uuid4()),
-            system_message="You are a creative food writer who crafts appealing, concise menu descriptions."
-        )
-        chat.with_model("gemini", "gemini-2.5-flash")
-        
-        prompt = f"Create a short, appealing menu description (2-3 sentences) for this dish: {request.dish_name} (Category: {request.category}). Make it sound delicious and appetizing."
-        msg = UserMessage(text=prompt)
-        
-        response = await chat.send_message(msg)
-        
-        return {"description": response}
+        prompt = f"Write a short, appealing menu description (2-3 sentences) for a dish named '{request.dish_name}' in the category '{request.category}'. Make it sound mouthwatering and creative."
+        response = text_model.generate_content(prompt)
+        return {"description": response.text.strip()}
     except Exception as e:
         logging.error(f"Error generating description: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate description: {str(e)}")
@@ -208,30 +196,10 @@ async def generate_description(request: GenerateDescriptionRequest):
 @api_router.post("/generate-image")
 async def generate_image(request: GenerateImageRequest):
     try:
-        api_key = os.environ.get('EMERGENT_LLM_KEY')
-        if not api_key:
-            raise HTTPException(status_code=500, detail="API key not configured")
-        
-        chat = LlmChat(
-            api_key=api_key,
-            session_id=str(uuid.uuid4()),
-            system_message="You are an AI that generates beautiful food images."
-        )
-        chat.with_model("gemini", "gemini-2.5-flash-image-preview").with_params(modalities=["image", "text"])
-        
-        prompt = f"Create a professional, appetizing photo of {request.dish_name}. {request.description}. The image should look like high-quality food photography with perfect lighting and presentation."
-        msg = UserMessage(text=prompt)
-        
-        text, images = await chat.send_message_multimodal_response(msg)
-        
-        if images and len(images) > 0:
-            # Return the base64 image data
-            image_data = images[0]['data']
-            mime_type = images[0]['mime_type']
-            return {"image_url": f"data:{mime_type};base64,{image_data}"}
-        else:
-            raise HTTPException(status_code=500, detail="No image generated")
-            
+        prompt = f"Create a professional, high-quality photo of {request.dish_name}. {request.description}. The image should look like perfect food photography with great lighting and presentation."
+        result = image_model.generate_content([prompt], generation_config={"response_mime_type": "image/png"})
+        image_base64 = base64.b64encode(result._result.candidates[0].content.parts[0].inline_data.data).decode()
+        return {"image_url": f"data:image/png;base64,{image_base64}"}
     except Exception as e:
         logging.error(f"Error generating image: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate image: {str(e)}")
@@ -240,16 +208,13 @@ async def generate_image(request: GenerateImageRequest):
 @api_router.get("/qr/{menu_id}")
 async def generate_qr_code(menu_id: str):
     try:
-        # Check if menu exists
         menu = await db.menus.find_one({"id": menu_id}, {"_id": 0})
         if not menu:
             raise HTTPException(status_code=404, detail="Menu not found")
-        
-        # Generate QR code URL - use the actual domain
+
         frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
         menu_url = f"{frontend_url}/menu/{menu_id}"
-        
-        # Create QR code
+
         qr = qrcode.QRCode(
             version=1,
             error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -258,19 +223,14 @@ async def generate_qr_code(menu_id: str):
         )
         qr.add_data(menu_url)
         qr.make(fit=True)
-        
+
         img = qr.make_image(fill_color="black", back_color="white")
-        
-        # Convert to base64
         buffer = io.BytesIO()
         img.save(buffer, format='PNG')
         buffer.seek(0)
         img_str = base64.b64encode(buffer.getvalue()).decode()
-        
-        return {
-            "qr_code": f"data:image/png;base64,{img_str}",
-            "menu_url": menu_url
-        }
+
+        return {"qr_code": f"data:image/png;base64,{img_str}", "menu_url": menu_url}
     except HTTPException:
         raise
     except Exception as e:
@@ -288,7 +248,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
