@@ -21,7 +21,7 @@ load_dotenv(ROOT_DIR / '.env')
 # Configure Gemini
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 text_model = genai.GenerativeModel("gemini-2.5-flash")
-image_model = genai.GenerativeModel("imagen-3.0")
+image_model = genai.GenerativeModel("gemini-2.5-flash")
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
