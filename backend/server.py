@@ -14,6 +14,7 @@ import io
 import qrcode
 import google.generativeai as genai
 
+# Load environment
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
@@ -27,13 +28,14 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Create the main app without a prefix
+# Main FastAPI app
 app = FastAPI()
 
-# Create a router with the /api prefix
+# Create a router for /api prefix
 api_router = APIRouter(prefix="/api")
 
-# Define Models
+# ----------------------------- MODELS -----------------------------
+
 class StatusCheck(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -43,7 +45,6 @@ class StatusCheck(BaseModel):
 class StatusCheckCreate(BaseModel):
     client_name: str
 
-# Menu Models
 class MenuCreate(BaseModel):
     cafe_name: str
     cafe_description: Optional[str] = ""
@@ -57,7 +58,6 @@ class Menu(BaseModel):
     theme_color: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-# Dish Models
 class DishCreate(BaseModel):
     menu_id: str
     name: str
@@ -84,7 +84,6 @@ class Dish(BaseModel):
     image_url: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-# AI Generation Models
 class GenerateDescriptionRequest(BaseModel):
     dish_name: str
     category: str
@@ -93,7 +92,8 @@ class GenerateImageRequest(BaseModel):
     dish_name: str
     description: str
 
-# Routes
+# ----------------------------- ROUTES -----------------------------
+
 @api_router.get("/")
 async def root():
     return {"message": "SavoroAI API (Gemini powered)"}
@@ -115,7 +115,7 @@ async def get_status_checks():
             check['timestamp'] = datetime.fromisoformat(check['timestamp'])
     return status_checks
 
-# Menu Endpoints
+# -------- MENUS --------
 @api_router.post("/menus", response_model=Menu)
 async def create_menu(menu_input: MenuCreate):
     menu_dict = menu_input.model_dump()
@@ -142,7 +142,7 @@ async def get_all_menus():
             menu['created_at'] = datetime.fromisoformat(menu['created_at'])
     return menus
 
-# Dish Endpoints
+# -------- DISHES --------
 @api_router.post("/dishes", response_model=Dish)
 async def create_dish(dish_input: DishCreate):
     dish_dict = dish_input.model_dump()
@@ -182,7 +182,7 @@ async def delete_dish(dish_id: str):
         raise HTTPException(status_code=404, detail="Dish not found")
     return {"message": "Dish deleted successfully"}
 
-# AI Generation Endpoints
+# -------- AI --------
 @api_router.post("/generate-description")
 async def generate_description(request: GenerateDescriptionRequest):
     try:
@@ -204,7 +204,7 @@ async def generate_image(request: GenerateImageRequest):
         logging.error(f"Error generating image: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate image: {str(e)}")
 
-# QR Code Generation
+# -------- QR --------
 @api_router.get("/qr/{menu_id}")
 async def generate_qr_code(menu_id: str):
     try:
@@ -237,17 +237,24 @@ async def generate_qr_code(menu_id: str):
         logging.error(f"Error generating QR code: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate QR code: {str(e)}")
 
-# Include the router in the main app
-app.include_router(api_router)
+# ----------------------------- APP CONFIG -----------------------------
 
+# ✅ CORS setup
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=[
+        "https://savoroai.vercel.app",
+        "http://localhost:3000"
+    ],
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ✅ Include routes
+app.include_router(api_router)
+
+# ✅ Logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
